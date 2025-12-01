@@ -117,14 +117,12 @@ async def whatsapp_webhook(
         phone_number = From.replace('whatsapp:', '')
         user_message = Body
         
-        # Get conversation history
+        # Get conversation history (previous messages only, NOT current message)
         conversation_history = get_conversation_history(phone_number)
         logger.info(f"📚 Conversation history for {phone_number}: {len(conversation_history)} messages")
         
-        # Add user message to history
-        add_to_conversation_history(phone_number, "user", user_message)
-        
         # Step 1: Call Agent Backend with conversation history
+        # NOTE: current user_message is sent separately, NOT in history
         logger.info(f"🤖 Calling Agent Backend: {AGENT_BACKEND_URL}")
         agent_response = await call_agent_backend(user_message, phone_number, conversation_history)
         
@@ -133,10 +131,11 @@ async def whatsapp_webhook(
         
         logger.info(f"✅ Agent response: {agent_response[:100]}...")
         
-        # Add agent response to history
+        # Step 2: Now add both user message and agent response to history
+        add_to_conversation_history(phone_number, "user", user_message)
         add_to_conversation_history(phone_number, "assistant", agent_response)
         
-        # Step 2: Send response back via Twilio WhatsApp
+        # Step 3: Send response back via Twilio WhatsApp
         if twilio_client:
             logger.info(f"📤 Sending WhatsApp response to {phone_number}")
             message = twilio_client.messages.create(
