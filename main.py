@@ -10,6 +10,8 @@ import httpx
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 import logging
+from datetime import datetime, timedelta
+from typing import Dict, List
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +27,57 @@ TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "+14155238886")
 
 # Initialize Twilio client
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID else None
+
+# ========== CONVERSATION HISTORY CACHE ==========
+# In-memory storage: {phone_number: {"messages": [...], "last_activity": datetime}}
+conversation_store: Dict[str, dict] = {}
+CONVERSATION_TIMEOUT_MINUTES = 30  # Clear conversations after 30 minutes of inactivity
+
+
+def get_conversation_history(phone_number: str) -> List[dict]:
+    """Get conversation history for a phone number"""
+    if phone_number not in conversation_store:
+        return []
+    
+    session = conversation_store[phone_number]
+    
+    # Check if conversation expired
+    if datetime.now() - session["last_activity"] > timedelta(minutes=CONVERSATION_TIMEOUT_MINUTES):
+        logger.info(f"🕐 Conversation expired for {phone_number}, clearing history")
+        del conversation_store[phone_number]
+        return []
+    
+    return session["messages"]
+
+
+def add_to_conversation_history(phone_number: str, role: str, content: str):
+    """Add a message to conversation history"""
+    if phone_number not in conversation_store:
+        conversation_store[phone_number] = {
+            "messages": [],
+            "last_activity": datetime.now()
+        }
+    
+    conversation_store[phone_number]["messages"].append({
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now().isoformat()
+    })
+    conversation_store[phone_number]["last_activity"] = datetime.now()
+    
+    # Keep only last 20 messages to prevent memory overflow
+    if len(conversation_store[phone_number]["messages"]) > 20:
+        conversation_store[phone_number]["messages"] = conversation_store[phone_number]["messages"][-20:]
+    
+    logger.info(f"💾 Conversation history updated for {phone_number}: {len(conversation_store[phone_number]['messages'])} messages")
+
+
+def clear_conversation_history(phone_number: str):
+    """Clear conversation history for a phone number"""
+    if phone_number in conversation_store:
+        del conversation_store[phone_number]
+        logger.info(f"🗑️ Conversation history cleared for {phone_number}")
+# ================================================
 
 
 @app.get("/")
@@ -52,9 +105,10 @@ async def whatsapp_webhook(
     
     Flow:
     1. Receive WhatsApp message from Twilio
-    2. Send to Agent Backend (OpenAI Agents SDK with MCP tools)
-    3. Get response from agent
-    4. Send back via Twilio WhatsApp
+    2. Get conversation history for this phone number
+    3. Send to Agent Backend (OpenAI Agents SDK with MCP tools)
+    4. Store agent response in conversation history
+    5. Send back via Twilio WhatsApp
     """
     logger.info(f"📱 Incoming WhatsApp message from {From}: {Body}")
     
@@ -63,14 +117,24 @@ async def whatsapp_webhook(
         phone_number = From.replace('whatsapp:', '')
         user_message = Body
         
-        # Step 1: Call Agent Backend
+        # Get conversation history
+        conversation_history = get_conversation_history(phone_number)
+        logger.info(f"📚 Conversation history for {phone_number}: {len(conversation_history)} messages")
+        
+        # Add user message to history
+        add_to_conversation_history(phone_number, "user", user_message)
+        
+        # Step 1: Call Agent Backend with conversation history
         logger.info(f"🤖 Calling Agent Backend: {AGENT_BACKEND_URL}")
-        agent_response = await call_agent_backend(user_message, phone_number)
+        agent_response = await call_agent_backend(user_message, phone_number, conversation_history)
         
         if not agent_response:
             raise HTTPException(status_code=500, detail="No response from Agent Backend")
         
         logger.info(f"✅ Agent response: {agent_response[:100]}...")
+        
+        # Add agent response to history
+        add_to_conversation_history(phone_number, "assistant", agent_response)
         
         # Step 2: Send response back via Twilio WhatsApp
         if twilio_client:
@@ -98,13 +162,14 @@ async def whatsapp_webhook(
         return Response(content=str(resp), media_type="application/xml")
 
 
-async def call_agent_backend(user_input: str, user_id: str) -> str:
+async def call_agent_backend(user_input: str, user_id: str, conversation_history: List[dict]) -> str:
     """
     Call Agent Backend (OpenAI Agents SDK with MCP tools)
     
     Args:
         user_input: User's message text
         user_id: User identifier (phone number)
+        conversation_history: Previous messages in conversation
         
     Returns:
         Agent's response text
@@ -121,8 +186,10 @@ async def call_agent_backend(user_input: str, user_id: str) -> str:
             payload = {
                 "user_id": user_id,
                 "message": user_input,
-                "conversation_history": []  # Can be extended to maintain conversation history
+                "conversation_history": conversation_history  # Now includes full conversation context!
             }
+            
+            logger.info(f"📦 Payload: user_id={user_id}, history_length={len(conversation_history)}")
             
             response = await client.post(
                 f"{AGENT_BACKEND_URL}/agent/run",
@@ -172,8 +239,27 @@ async def health_check():
         "status": "healthy",
         "checks": {
             "agent_backend_url": AGENT_BACKEND_URL,
-            "twilio_configured": "yes" if twilio_client else "no"
+            "twilio_configured": "yes" if twilio_client else "no",
+            "active_conversations": len(conversation_store)
         }
+    }
+
+
+@app.post("/conversation/clear/{phone_number}")
+async def clear_conversation(phone_number: str):
+    """Clear conversation history for a phone number (admin endpoint)"""
+    clear_conversation_history(phone_number)
+    return {"status": "cleared", "phone_number": phone_number}
+
+
+@app.get("/conversation/{phone_number}")
+async def get_conversation(phone_number: str):
+    """Get conversation history for a phone number (debug endpoint)"""
+    history = get_conversation_history(phone_number)
+    return {
+        "phone_number": phone_number,
+        "message_count": len(history),
+        "messages": history
     }
 
 
