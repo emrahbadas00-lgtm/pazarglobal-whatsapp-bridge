@@ -99,18 +99,29 @@ async def whatsapp_webhook(
     From: str = Form(...),
     To: str = Form(None),
     MessageSid: str = Form(None),
+    NumMedia: int = Form(0),  # Number of media files
+    MediaUrl0: str = Form(None),  # First media URL
+    MediaContentType0: str = Form(None),  # First media content type
 ):
     """
     Twilio WhatsApp webhook endpoint
     
     Flow:
-    1. Receive WhatsApp message from Twilio
+    1. Receive WhatsApp message from Twilio (text + optional media)
     2. Get conversation history for this phone number
     3. Send to Agent Backend (OpenAI Agents SDK with MCP tools)
     4. Store agent response in conversation history
     5. Send back via Twilio WhatsApp
     """
     logger.info(f"📱 Incoming WhatsApp message from {From}: {Body}")
+    
+    # Check for media attachments
+    has_media = NumMedia > 0
+    media_url = MediaUrl0 if has_media else None
+    media_type = MediaContentType0 if has_media else None
+    
+    if has_media:
+        logger.info(f"📸 Media attached: {media_type} - {media_url}")
     
     try:
         # Extract phone number (remove 'whatsapp:' prefix)
@@ -121,10 +132,16 @@ async def whatsapp_webhook(
         conversation_history = get_conversation_history(phone_number)
         logger.info(f"📚 Conversation history for {phone_number}: {len(conversation_history)} messages")
         
-        # Step 1: Call Agent Backend with conversation history
+        # Step 1: Call Agent Backend with conversation history + media URL
         # NOTE: current user_message is sent separately, NOT in history
         logger.info(f"🤖 Calling Agent Backend: {AGENT_BACKEND_URL}")
-        agent_response = await call_agent_backend(user_message, phone_number, conversation_history)
+        agent_response = await call_agent_backend(
+            user_message, 
+            phone_number, 
+            conversation_history,
+            media_url=media_url,
+            media_type=media_type
+        )
         
         if not agent_response:
             raise HTTPException(status_code=500, detail="No response from Agent Backend")
@@ -161,7 +178,13 @@ async def whatsapp_webhook(
         return Response(content=str(resp), media_type="application/xml")
 
 
-async def call_agent_backend(user_input: str, user_id: str, conversation_history: List[dict]) -> str:
+async def call_agent_backend(
+    user_input: str, 
+    user_id: str, 
+    conversation_history: List[dict],
+    media_url: str = None,
+    media_type: str = None
+) -> str:
     """
     Call Agent Backend (OpenAI Agents SDK with MCP tools)
     
@@ -169,6 +192,8 @@ async def call_agent_backend(user_input: str, user_id: str, conversation_history
         user_input: User's message text
         user_id: User identifier (phone number)
         conversation_history: Previous messages in conversation
+        media_url: Optional media URL (image/video from WhatsApp)
+        media_type: Optional media content type (e.g., "image/jpeg")
         
     Returns:
         Agent's response text
@@ -176,6 +201,19 @@ async def call_agent_backend(user_input: str, user_id: str, conversation_history
     if not AGENT_BACKEND_URL:
         logger.error("AGENT_BACKEND_URL not configured")
         return "Sistem yapılandırma hatası. Lütfen yönetici ile iletişime geçin."
+    
+    # Prepare payload
+    payload = {
+        "user_input": user_input,
+        "user_id": user_id,
+        "conversation_history": conversation_history
+    }
+    
+    # Add media info if present
+    if media_url:
+        payload["media_url"] = media_url
+        payload["media_type"] = media_type
+        logger.info(f"📸 Including media in request: {media_type}")
     
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
