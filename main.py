@@ -4,6 +4,7 @@ FastAPI webhook server to bridge WhatsApp (Twilio) with Agent Backend (OpenAI Ag
 Replaces N8N workflow
 """
 import os
+import uuid
 from fastapi import FastAPI, Request, HTTPException, Form
 from fastapi.responses import Response
 import httpx
@@ -11,7 +12,7 @@ from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +26,10 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "+14155238886")
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "listings")
+
 # Initialize Twilio client
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID else None
 
@@ -32,6 +37,78 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_
 # In-memory storage: {phone_number: {"messages": [...], "last_activity": datetime}}
 conversation_store: Dict[str, dict] = {}
 CONVERSATION_TIMEOUT_MINUTES = 30  # Clear conversations after 30 minutes of inactivity
+MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB limit
+
+
+def _sanitize_user_id(user_id: str) -> str:
+    # Twilio phone comes as +90..., remove plus and spaces for path safety
+    return (user_id or "unknown").replace("+", "").replace(" ", "")
+
+
+def _build_storage_path(user_id: str, listing_uuid: str, media_type: Optional[str]) -> str:
+    ext = (media_type or "image/jpeg").split("/")[-1] or "jpg"
+    return f"{_sanitize_user_id(user_id)}/{listing_uuid}/{uuid.uuid4()}.{ext}"
+
+
+async def download_media(media_url: str, media_type: Optional[str]) -> Optional[tuple[bytes, str]]:
+    if not media_url:
+        return None
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        logger.warning("Twilio credentials missing, cannot fetch media")
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+        if not resp.is_success:
+            logger.warning(f"Failed to download media: status={resp.status_code}")
+            return None
+        content_type = resp.headers.get("Content-Type", media_type or "")
+        if not content_type.startswith("image/"):
+            logger.warning(f"Blocked non-image media: {content_type}")
+            return None
+        content = resp.content
+        if content and len(content) > MAX_MEDIA_BYTES:
+            logger.warning(f"Media too large ({len(content)} bytes), skipping upload")
+            return None
+        return content, content_type
+    except Exception as e:
+        logger.error(f"Error downloading media: {e}")
+        return None
+
+
+async def upload_to_supabase(path: str, content: bytes, content_type: str) -> bool:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        logger.warning("Supabase credentials missing, cannot upload media")
+        return False
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{path}"
+    headers = {
+        "Content-Type": content_type,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "apikey": SUPABASE_SERVICE_KEY,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(upload_url, content=content, headers=headers)
+        if resp.status_code in (200, 201):
+            logger.info(f"✅ Uploaded media to Supabase: {path}")
+            return True
+        logger.warning(f"Supabase upload failed ({resp.status_code}): {resp.text}")
+        return False
+    except Exception as e:
+        logger.error(f"Error uploading to Supabase: {e}")
+        return False
+
+
+async def process_media(user_id: str, listing_uuid: str, media_url: str, media_type: Optional[str]) -> Optional[str]:
+    downloaded = await download_media(media_url, media_type)
+    if not downloaded:
+        return None
+    content, ctype = downloaded
+    storage_path = _build_storage_path(user_id, listing_uuid, ctype)
+    success = await upload_to_supabase(storage_path, content, ctype)
+    if success:
+        return storage_path
+    return None
 
 
 def get_conversation_history(phone_number: str) -> List[dict]:
@@ -119,9 +196,17 @@ async def whatsapp_webhook(
     has_media = NumMedia > 0
     media_url = MediaUrl0 if has_media else None
     media_type = MediaContentType0 if has_media else None
+    media_paths: List[str] = []
+    draft_listing_id: Optional[str] = None
     
     if has_media:
         logger.info(f"📸 Media attached: {media_type} - {media_url}")
+        draft_listing_id = str(uuid.uuid4())
+        uploaded_path = await process_media(From.replace('whatsapp:', ''), draft_listing_id, media_url, media_type)
+        if uploaded_path:
+            media_paths.append(uploaded_path)
+        else:
+            logger.warning("Media processing failed; continuing without attachment")
     
     try:
         # Extract phone number (remove 'whatsapp:' prefix)
@@ -139,8 +224,9 @@ async def whatsapp_webhook(
             user_message, 
             phone_number, 
             conversation_history,
-            media_url=media_url,
-            media_type=media_type
+            media_paths=media_paths if media_paths else None,
+            media_type=media_type if media_paths else None,
+            draft_listing_id=draft_listing_id
         )
         
         if not agent_response:
@@ -182,8 +268,9 @@ async def call_agent_backend(
     user_input: str, 
     user_id: str, 
     conversation_history: List[dict],
-    media_url: str = None,
-    media_type: str = None
+    media_paths: Optional[List[str]] = None,
+    media_type: str = None,
+    draft_listing_id: Optional[str] = None
 ) -> str:
     """
     Call Agent Backend (OpenAI Agents SDK with MCP tools)
@@ -192,8 +279,9 @@ async def call_agent_backend(
         user_input: User's message text
         user_id: User identifier (phone number)
         conversation_history: Previous messages in conversation
-        media_url: Optional media URL (image/video from WhatsApp)
+        media_paths: Optional list of uploaded storage paths
         media_type: Optional media content type (e.g., "image/jpeg")
+        draft_listing_id: Optional UUID to keep storage paths and DB id aligned
         
     Returns:
         Agent's response text
@@ -201,19 +289,6 @@ async def call_agent_backend(
     if not AGENT_BACKEND_URL:
         logger.error("AGENT_BACKEND_URL not configured")
         return "Sistem yapılandırma hatası. Lütfen yönetici ile iletişime geçin."
-    
-    # Prepare payload
-    payload = {
-        "user_input": user_input,
-        "user_id": user_id,
-        "conversation_history": conversation_history
-    }
-    
-    # Add media info if present
-    if media_url:
-        payload["media_url"] = media_url
-        payload["media_type"] = media_type
-        logger.info(f"📸 Including media in request: {media_type}")
     
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -223,7 +298,10 @@ async def call_agent_backend(
             payload = {
                 "user_id": user_id,
                 "message": user_input,
-                "conversation_history": conversation_history  # Now includes full conversation context!
+                "conversation_history": conversation_history,  # Now includes full conversation context!
+                "media_paths": media_paths,
+                "media_type": media_type,
+                "draft_listing_id": draft_listing_id,
             }
             
             logger.info(f"📦 Payload: user_id={user_id}, history_length={len(conversation_history)}")
