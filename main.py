@@ -4,8 +4,10 @@ FastAPI webhook server to bridge WhatsApp (Twilio) with Agent Backend (OpenAI Ag
 Replaces N8N workflow
 """
 import ast
+import io
 import os
 import uuid
+import re
 from fastapi import FastAPI, Request, HTTPException, Form
 from fastapi.responses import Response
 import httpx
@@ -14,6 +16,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from PIL import Image
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +42,7 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_
 conversation_store: Dict[str, dict] = {}
 CONVERSATION_TIMEOUT_MINUTES = 30  # Clear conversations after 30 minutes of inactivity
 MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB limit
+MAX_MEDIA_PER_MESSAGE = 3  # Avoid WhatsApp bulk; keep under total size limits
 
 
 def _extract_last_media_context(history: List[dict]) -> tuple[Optional[str], List[str]]:
@@ -107,6 +111,56 @@ async def download_media(media_url: str, media_type: Optional[str]) -> Optional[
         return None
 
 
+def _compress_image(content: bytes, media_type: Optional[str]) -> Optional[tuple[bytes, str]]:
+    """Downsize and recompress image to keep WhatsApp-friendly size."""
+    try:
+        img = Image.open(io.BytesIO(content))
+        img = img.convert("RGB")  # Ensure JPEG-compatible
+
+        max_side = 1600
+        w, h = img.size
+        if max(w, h) > max_side:
+            ratio = max_side / float(max(w, h))
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+
+        target_bytes = 900_000  # ~0.9 MB target to stay well under Twilio limits
+        quality = 85
+        min_quality = 50
+        best = None
+
+        while quality >= min_quality:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            data = buf.getvalue()
+            best = data
+            if len(data) <= target_bytes:
+                break
+            quality -= 10
+
+        if best:
+            return best, "image/jpeg"
+        return None
+    except Exception as e:
+        logger.warning(f"Image compression failed, using original: {e}")
+        return None
+
+
+def _extract_image_urls(text: str) -> List[str]:
+    """Pick first few image URLs (Supabase public) from agent response."""
+    if not text:
+        return []
+    urls = re.findall(r"https?://\S+", text)
+    images: List[str] = []
+    for u in urls:
+        # Heuristic: only Supabase storage links or common image extensions
+        lower = u.lower()
+        if ("/storage/v1/object/" in lower) or lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+            images.append(u.rstrip(').,;'))
+        if len(images) >= MAX_MEDIA_PER_MESSAGE:
+            break
+    return images
+
+
 async def upload_to_supabase(path: str, content: bytes, content_type: str) -> bool:
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         logger.warning("Supabase credentials missing, cannot upload media")
@@ -135,6 +189,11 @@ async def process_media(user_id: str, listing_uuid: str, media_url: str, media_t
     if not downloaded:
         return None
     content, ctype = downloaded
+
+    compressed = _compress_image(content, ctype)
+    if compressed:
+        content, ctype = compressed
+
     storage_path = _build_storage_path(user_id, listing_uuid, ctype)
     success = await upload_to_supabase(storage_path, content, ctype)
     if success:
@@ -296,9 +355,12 @@ async def whatsapp_webhook(
                 logger.warning(f"⚠️ Response too long ({len(agent_response)} chars), truncating to {MAX_WHATSAPP_LENGTH}")
                 truncated_response = agent_response[:MAX_WHATSAPP_LENGTH - 50] + "\n\n...(mesaj çok uzun, devamı için daha spesifik arama yapın)"
             
+            media_urls = _extract_image_urls(truncated_response)
+
             message = twilio_client.messages.create(
                 from_=f'whatsapp:{TWILIO_WHATSAPP_NUMBER}',
                 body=truncated_response,
+                media_url=media_urls if media_urls else None,
                 to=f'whatsapp:{phone_number}'
             )
             logger.info(f"✅ Twilio message sent: {message.sid}")
