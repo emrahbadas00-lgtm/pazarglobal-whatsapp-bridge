@@ -85,7 +85,7 @@ def _build_storage_path(user_id: str, listing_uuid: str, media_type: Optional[st
     return f"{_sanitize_user_id(user_id)}/{listing_uuid}/{uuid.uuid4()}.{ext}"
 
 
-async def download_media(media_url: str, media_type: Optional[str]) -> Optional[tuple[bytes, str]]:
+async def download_media(media_url: str, media_type: Optional[str], message_sid: Optional[str], media_sid: Optional[str]) -> Optional[tuple[bytes, str]]:
     if not media_url:
         return None
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
@@ -94,6 +94,16 @@ async def download_media(media_url: str, media_type: Optional[str]) -> Optional[
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+        if resp.status_code == 404 and twilio_client and message_sid and media_sid:
+            try:
+                media_obj = twilio_client.messages(message_sid).media(media_sid).fetch()
+                # Twilio returns uri like /2010-04-01/Accounts/AC.../Messages/MM.../Media/ME....json
+                fallback_url = f"https://api.twilio.com{media_obj.uri.replace('.json','')}"
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(fallback_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+            except Exception as tw_err:
+                logger.warning(f"Twilio fallback media fetch failed: {tw_err}")
+
         if not resp.is_success:
             logger.warning(f"Failed to download media: status={resp.status_code}")
             return None
@@ -184,8 +194,15 @@ async def upload_to_supabase(path: str, content: bytes, content_type: str) -> bo
         return False
 
 
-async def process_media(user_id: str, listing_uuid: str, media_url: str, media_type: Optional[str]) -> Optional[str]:
-    downloaded = await download_media(media_url, media_type)
+async def process_media(
+    user_id: str,
+    listing_uuid: str,
+    media_url: str,
+    media_type: Optional[str],
+    message_sid: Optional[str] = None,
+    media_sid: Optional[str] = None,
+) -> Optional[str]:
+    downloaded = await download_media(media_url, media_type, message_sid, media_sid)
     if not downloaded:
         return None
     content, ctype = downloaded
@@ -297,12 +314,15 @@ async def whatsapp_webhook(
     prev_draft_id, prev_media_paths = _extract_last_media_context(previous_history)
 
     # Check for media attachments (support multiple)
-    media_items: List[tuple[str, Optional[str]]] = []
+    media_items: List[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
     for i in range(min(num_media, 10)):
         url = form.get(f"MediaUrl{i}")
         mtype = form.get(f"MediaContentType{i}")
+        msid = form.get("MessageSid")
+        # Twilio media SID is the last token of the URL
+        media_sid = url.split("/")[-1] if url else None
         if url:
-            media_items.append((url, mtype))
+            media_items.append((url, mtype, msid, media_sid))
 
     if has_media := len(media_items) > 0:
         logger.info(f"🧾 MEDIA ITEMS PARSED: {media_items}")
@@ -316,8 +336,8 @@ async def whatsapp_webhook(
         draft_listing_id = draft_listing_id or str(uuid.uuid4())
         uploaded_any = False
 
-        for url, mtype in media_items:
-            uploaded_path = await process_media(phone_number, draft_listing_id, url, mtype)
+        for url, mtype, msid, media_sid in media_items:
+            uploaded_path = await process_media(phone_number, draft_listing_id, url, mtype, msid, media_sid)
             if uploaded_path:
                 uploaded_any = True
                 prev = prev_media_paths or []
