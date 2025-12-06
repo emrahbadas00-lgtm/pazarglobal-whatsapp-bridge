@@ -262,13 +262,14 @@ async def root():
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(
+    request: Request,
     Body: str = Form(...),
     From: str = Form(...),
     To: str = Form(None),
     MessageSid: str = Form(None),
-    NumMedia: int = Form(0),  # Number of media files
-    MediaUrl0: str = Form(None),  # First media URL
-    MediaContentType0: str = Form(None),  # First media content type
+    NumMedia: int = Form(0),  # Number of media files (first index)
+    MediaUrl0: str = Form(None),  # First media URL (kept for FastAPI schema)
+    MediaContentType0: str = Form(None),  # First media content type (schema)
 ):
     """
     Twilio WhatsApp webhook endpoint
@@ -280,36 +281,52 @@ async def whatsapp_webhook(
     4. Store agent response in conversation history
     5. Send back via Twilio WhatsApp
     """
+    form = await request.form()
+    num_media = int(form.get("NumMedia", 0) or 0)
+
     logger.info(f"📱 Incoming WhatsApp message from {From}: {Body}")
-    logger.info(f"🔍 DEBUG - NumMedia: {NumMedia}, MediaUrl0: {MediaUrl0}, MediaContentType0: {MediaContentType0}")
+    logger.info(f"🔍 DEBUG - NumMedia: {num_media}, MediaUrl0: {MediaUrl0}, MediaContentType0: {MediaContentType0}")
 
     # Extract phone number early for history reuse
     phone_number = From.replace('whatsapp:', '')
     previous_history = get_conversation_history(phone_number)
     prev_draft_id, prev_media_paths = _extract_last_media_context(previous_history)
 
-    # Check for media attachments
-    has_media = NumMedia > 0
-    media_url = MediaUrl0 if has_media else None
-    media_type = MediaContentType0 if has_media else None
+    # Check for media attachments (support multiple)
+    media_items: List[tuple[str, Optional[str]]] = []
+    for i in range(min(num_media, 10)):
+        url = form.get(f"MediaUrl{i}")
+        mtype = form.get(f"MediaContentType{i}")
+        if url:
+            media_items.append((url, mtype))
+
+    has_media = len(media_items) > 0
+    first_media_type = media_items[0][1] if media_items else None
     media_paths: List[str] = []
     draft_listing_id: Optional[str] = prev_draft_id
 
     if has_media:
-        logger.info(f"📸 Media attached: {media_type} - {media_url}")
+        logger.info(f"📸 Media attached count: {len(media_items)}")
         draft_listing_id = draft_listing_id or str(uuid.uuid4())
-        uploaded_path = await process_media(phone_number, draft_listing_id, media_url, media_type)
-        if uploaded_path:
-            # Merge with previous media (same draft) to keep gallery intact
-            combined_paths = list(dict.fromkeys((prev_media_paths or []) + [uploaded_path]))
-            media_paths.extend(combined_paths)
-            logger.info(f"✅ Media uploaded successfully: {uploaded_path}")
-            # Persist system media note so future turns still carry photo paths
+        uploaded_any = False
+
+        for url, mtype in media_items:
+            uploaded_path = await process_media(phone_number, draft_listing_id, url, mtype)
+            if uploaded_path:
+                uploaded_any = True
+                prev = prev_media_paths or []
+                combined_paths = list(dict.fromkeys(prev + media_paths + [uploaded_path]))
+                media_paths = combined_paths
+                logger.info(f"✅ Media uploaded: {uploaded_path}")
+            else:
+                logger.warning(f"Media upload failed for {url}")
+
+        if uploaded_any and media_paths:
             media_note = f"[SYSTEM_MEDIA_NOTE] DRAFT_LISTING_ID={draft_listing_id} | MEDIA_PATHS={media_paths}"
             add_to_conversation_history(phone_number, "assistant", media_note)
         else:
             logger.warning("Media processing failed; continuing without attachment")
-            # Notify user about media failure (optional: can send a warning message here)
+            # Optional: notify user about media failure
 
     # If no new media uploaded, still surface previous draft/media context to backend
     payload_media_paths = media_paths if media_paths else (prev_media_paths if prev_media_paths else None)
@@ -330,7 +347,7 @@ async def whatsapp_webhook(
             phone_number, 
             conversation_history,
             media_paths=payload_media_paths,
-            media_type=media_type if payload_media_paths else None,
+            media_type=first_media_type if payload_media_paths else None,
             draft_listing_id=payload_draft_id
         )
         
