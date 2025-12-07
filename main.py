@@ -332,6 +332,9 @@ def format_listing_detail(listing: dict) -> str:
     location = listing.get("location") or "Belirtilmedi"
     condition = listing.get("condition") or "Belirtilmedi"
     category = listing.get("category") or "Belirtilmedi"
+    listing_id = listing.get("id")
+    owner_name = listing.get("user_name") or listing.get("owner_name")
+    owner_phone = listing.get("user_phone") or listing.get("owner_phone")
     description = listing.get("description") or ""
     desc_short = description[:160] + ("..." if len(description or "") > 160 else "")
 
@@ -341,6 +344,15 @@ def format_listing_detail(listing: dict) -> str:
     lines.append(f"Konum: {location}")
     lines.append(f"Durum: {condition}")
     lines.append(f"Kategori: {category}")
+    if listing_id:
+        lines.append(f"İlan ID: {listing_id}")
+    if owner_name or owner_phone:
+        parts = []
+        if owner_name:
+            parts.append(owner_name)
+        if owner_phone:
+            parts.append(owner_phone)
+        lines.append("İlan sahibi: " + " | ".join(parts))
     if desc_short:
         lines.append(f"Açıklama: {desc_short}")
 
