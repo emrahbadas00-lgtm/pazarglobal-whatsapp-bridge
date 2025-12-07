@@ -422,15 +422,25 @@ async def whatsapp_webhook(
         if twilio_client:
             logger.info(f"📤 Sending WhatsApp response to {phone_number}")
             
-            # Twilio WhatsApp has 1600 character limit - truncate if needed
+            # Extract media URLs FIRST to calculate available body length
+            media_urls = _extract_image_urls(agent_response)
+            
+            # Twilio WhatsApp limit: body + media_url combined max 1600 chars
+            # Each media URL ~100 chars, so reserve space
             MAX_WHATSAPP_LENGTH = 1600
+            MEDIA_URL_OVERHEAD = len(media_urls) * 120  # Reserve 120 chars per media URL
+            MAX_BODY_LENGTH = MAX_WHATSAPP_LENGTH - MEDIA_URL_OVERHEAD - 100  # Extra safety margin
+            
             truncated_response = agent_response
             
-            if len(agent_response) > MAX_WHATSAPP_LENGTH:
-                logger.warning(f"⚠️ Response too long ({len(agent_response)} chars), truncating to {MAX_WHATSAPP_LENGTH}")
-                truncated_response = agent_response[:MAX_WHATSAPP_LENGTH - 50] + "\n\n...(mesaj çok uzun, devamı için daha spesifik arama yapın)"
+            if len(agent_response) > MAX_BODY_LENGTH:
+                logger.warning(f"⚠️ Response too long ({len(agent_response)} chars), truncating to {MAX_BODY_LENGTH} (with {len(media_urls)} media)")
+                truncated_response = agent_response[:MAX_BODY_LENGTH - 60] + "\n\n...(devamı için daha spesifik arama yapın)"
             
-            media_urls = _extract_image_urls(truncated_response)
+            # Remove image URLs from body text (they'll be sent as media_url)
+            if media_urls:
+                for url in media_urls:
+                    truncated_response = truncated_response.replace(url, "[📸]")
 
             message = twilio_client.messages.create(
                 from_=f'whatsapp:{TWILIO_WHATSAPP_NUMBER}',
