@@ -9,11 +9,8 @@ import os
 import uuid
 import re
 from fastapi import FastAPI, Request, HTTPException, Form
-from fastapi.responses import Response, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 import httpx
-import json
-import asyncio
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 import logging
@@ -26,21 +23,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Pazarglobal WhatsApp Bridge")
-
-# CORS Configuration for Web Frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "https://*.vercel.app",
-        "https://*.railway.app",
-        "*"  # TODO: Replace with production domain
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Environment variables
 AGENT_BACKEND_URL = os.getenv("AGENT_BACKEND_URL", "https://pazarglobal-agent-backend-production-4ec8.up.railway.app")
@@ -676,97 +658,6 @@ async def call_agent_backend(
         logger.error(f"❌ Unexpected error calling Agent Backend: {str(e)}")
         logger.exception(e)
         return "Beklenmeyen bir hata oluştu."
-
-
-@app.post("/web-chat")
-async def web_chat_endpoint(request: Request):
-    """
-    Web frontend chat endpoint with SSE (Server-Sent Events) streaming
-    
-    Request body:
-    {
-        "message": "User message",
-        "user_id": "web_user_12345",
-        "session_id": "optional_session_id"
-    }
-    
-    Response: SSE stream
-    data: {"type":"text","content":"chunk"}
-    """
-    try:
-        body = await request.json()
-        message = body.get("message", "").strip()
-        user_id = body.get("user_id", f"web_{uuid.uuid4().hex[:8]}")
-        session_id = body.get("session_id")
-        
-        if not message:
-            raise HTTPException(status_code=400, detail="Message is required")
-        
-        logger.info(f"💬 Web chat request from user_id={user_id}: {message[:100]}")
-        
-        # Get conversation history for web user (separate from WhatsApp)
-        conversation_history = get_conversation_history(f"web_{user_id}")
-        logger.info(f"📚 Web conversation history: {len(conversation_history)} messages")
-        
-        async def generate_sse_stream():
-            """Generator function for SSE streaming"""
-            try:
-                # Call agent backend
-                agent_response = await call_agent_backend(
-                    user_input=message,
-                    user_id=f"web_{user_id}",
-                    conversation_history=conversation_history,
-                    media_paths=None,
-                    media_type=None,
-                    draft_listing_id=None
-                )
-                
-                if not agent_response:
-                    yield f"data: {json.dumps({'type': 'error', 'content': 'No response from agent'})}
-
-"
-                    return
-                
-                # Store in history
-                add_to_conversation_history(f"web_{user_id}", "user", message)
-                add_to_conversation_history(f"web_{user_id}", "assistant", agent_response)
-                
-                # Stream response in chunks (simulate token-by-token streaming)
-                words = agent_response.split()
-                for i, word in enumerate(words):
-                    chunk = word if i == 0 else f" {word}"
-                    data = {"type": "text", "content": chunk}
-                    yield f"data: {json.dumps(data)}
-
-"
-                    await asyncio.sleep(0.02)  # 20ms delay for smooth streaming
-                
-                # Send completion signal
-                yield f"data: {json.dumps({'type': 'done'})}
-
-"
-                
-            except Exception as e:
-                logger.error(f"❌ Error in SSE stream: {str(e)}")
-                logger.exception(e)
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}
-
-"
-        
-        return StreamingResponse(
-            generate_sse_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # Disable nginx buffering
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Error in web chat endpoint: {str(e)}")
-        logger.exception(e)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
