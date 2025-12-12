@@ -491,9 +491,9 @@ async def whatsapp_webhook(
             logger.warning("Media processing failed; continuing without attachment")
             # Optional: notify user about media failure
 
-    # If no new media uploaded, still surface previous draft/media context to backend
-    payload_media_paths = media_paths if media_paths else (prev_media_paths if prev_media_paths else None)
-    payload_draft_id = draft_listing_id or prev_draft_id
+    # Only send media paths/draft id when this request actually contained media
+    payload_media_paths = media_paths if has_media else None
+    payload_draft_id = draft_listing_id if has_media else None
     
     logger.info(f"📦 Sending to agent: draft_id={payload_draft_id}, media_count={len(payload_media_paths) if payload_media_paths else 0}")
     if payload_media_paths:
