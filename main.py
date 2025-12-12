@@ -413,7 +413,7 @@ async def root():
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(
     request: Request,
-    Body: str = Form(...),
+    Body: str = Form(""),  # Twilio bazen medya-only mesajlarda Body göndermiyor
     From: str = Form(...),
     To: str = Form(None),
     MessageSid: str = Form(None),
