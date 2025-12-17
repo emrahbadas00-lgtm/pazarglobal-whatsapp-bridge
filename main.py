@@ -177,15 +177,41 @@ def _extract_image_urls(text: str) -> List[str]:
     """Pick first few image URLs (Supabase public) from agent response."""
     if not text:
         return []
-    urls = re.findall(r"https?://\S+", text)
+    
+    # First try to extract URLs from markdown image syntax: ![alt](url)
+    markdown_images = re.findall(r'!\[.*?\]\((https?://[^)]+)\)', text)
+    
+    # Then fallback to plain URLs in text
+    plain_urls = re.findall(r"https?://\S+", text)
+    
     images: List[str] = []
-    for u in urls:
-        # Heuristic: only Supabase storage links or common image extensions
-        lower = u.lower()
+    seen = set()
+    
+    # Prioritize markdown images (cleaner extraction)
+    for url in markdown_images:
+        clean_url = url.rstrip(').,;')
+        if clean_url in seen:
+            continue
+        lower = clean_url.lower()
         if ("/storage/v1/object/" in lower) or lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-            images.append(u.rstrip(').,;'))
+            images.append(clean_url)
+            seen.add(clean_url)
         if len(images) >= MAX_MEDIA_PER_MESSAGE:
             break
+    
+    # Add plain URLs if still under limit
+    if len(images) < MAX_MEDIA_PER_MESSAGE:
+        for u in plain_urls:
+            clean_url = u.rstrip(').,;')
+            if clean_url in seen:
+                continue
+            lower = clean_url.lower()
+            if ("/storage/v1/object/" in lower) or lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                images.append(clean_url)
+                seen.add(clean_url)
+            if len(images) >= MAX_MEDIA_PER_MESSAGE:
+                break
+    
     return images
 
 
