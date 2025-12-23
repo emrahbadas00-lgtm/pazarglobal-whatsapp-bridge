@@ -48,6 +48,10 @@ CONVERSATION_TIMEOUT_MINUTES = 30  # Clear conversations after 30 minutes of ina
 MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB limit
 MAX_MEDIA_PER_MESSAGE = 3  # Avoid WhatsApp bulk; keep under total size limits
 
+# If true, WhatsApp bridge will render numbered listing detail from its in-memory cache
+# without calling backend. Default is False to keep WhatsApp/WebChat behavior consistent.
+WHATSAPP_LOCAL_DETAIL_SHORTCIRCUIT = os.getenv("WHATSAPP_LOCAL_DETAIL_SHORTCIRCUIT", "false").lower() in ("1", "true", "yes")
+
 
 def _extract_last_media_context(history: List[dict]) -> tuple[Optional[str], List[str]]:
     """Fetch the latest draft id and ALL media paths from prior system notes."""
@@ -348,6 +352,29 @@ def parse_search_cache_block(text: str) -> tuple[str, Optional[List[dict]]]:
     return stripped, None
 
 
+def build_last_search_results_note(results: List[dict], max_items: int = 10) -> str:
+    """Build a compact note for backend to resolve "1 nolu ilan" requests.
+
+    Format is aligned with backend expectations:
+    [LAST_SEARCH_RESULTS] #1 id=... title=... | #2 id=... title=...
+    """
+    if not results:
+        return ""
+    parts: List[str] = []
+    for i, item in enumerate(results[:max_items], start=1):
+        if not isinstance(item, dict):
+            continue
+        listing_id = item.get("id")
+        title = item.get("title") or ""
+        if not listing_id:
+            continue
+        title_s = str(title).replace("|", " ").replace("\n", " ").strip()
+        parts.append(f"#{i} id={listing_id} title={title_s}")
+    if not parts:
+        return ""
+    return "[LAST_SEARCH_RESULTS] " + " | ".join(parts)
+
+
 def clear_conversation_history(phone_number: str):
     """Clear conversation history for a phone number"""
     if phone_number in conversation_store:
@@ -527,7 +554,8 @@ async def whatsapp_webhook(
     if payload_media_paths:
         logger.info(f"📸 Media paths being sent: {payload_media_paths}")
 
-    # Short-circuit: detail request using cached search results
+    # Optional legacy short-circuit: render detail from cached search results.
+    # Default disabled to keep behavior consistent with WebChat and backend server-side detail rendering.
     lower_body = (Body or "").lower().strip()
     search_cache = get_search_cache(phone_number)
     detail_match = re.search(r"(\d+)\s*nolu\s*ilan[ıi]?\s*göster", lower_body)
@@ -537,7 +565,7 @@ async def whatsapp_webhook(
     elif search_cache and len(search_cache) == 1 and ("detay" in lower_body or "ilanı" in lower_body):
         detail_idx = 0
 
-    if search_cache is not None and detail_idx is not None:
+    if WHATSAPP_LOCAL_DETAIL_SHORTCIRCUIT and search_cache is not None and detail_idx is not None:
         if 0 <= detail_idx < len(search_cache):
             listing = search_cache[detail_idx]
             detail_text = format_listing_detail(listing)
@@ -560,6 +588,18 @@ async def whatsapp_webhook(
         # Get conversation history (previous messages only, NOT current message)
         conversation_history = get_conversation_history(phone_number)
         logger.info(f"📚 Conversation history for {phone_number}: {len(conversation_history)} messages")
+
+        # If this is a numbered-detail request, inject last search results note so backend can resolve
+        # listing id deterministically even across multiple backend instances.
+        conversation_history_for_backend = list(conversation_history)
+        if detail_idx is not None and isinstance(search_cache, list) and search_cache:
+            note = build_last_search_results_note(search_cache)
+            if note:
+                conversation_history_for_backend.append({
+                    "role": "assistant",
+                    "content": note,
+                    "timestamp": datetime.now().isoformat(),
+                })
         
         # Step 1: Call Agent Backend with conversation history + media URL
         # NOTE: current user_message is sent separately, NOT in history
@@ -567,7 +607,7 @@ async def whatsapp_webhook(
         agent_response = await call_agent_backend(
             user_message, 
             phone_number, 
-            conversation_history,
+            conversation_history_for_backend,
             media_paths=payload_media_paths,
             media_type=first_media_type if payload_media_paths else None,
             draft_listing_id=payload_draft_id

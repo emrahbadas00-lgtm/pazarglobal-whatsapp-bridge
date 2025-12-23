@@ -61,6 +61,7 @@ WhatsApp kullanıcılarını PazarGlobal AI Agent Backend'e bağlayan webhook se
 ```
 
 **Teknoloji Stack:**
+
 - **Framework:** FastAPI
 - **WhatsApp API:** Twilio WhatsApp Business
 - **Storage:** Supabase Storage (product-images bucket)
@@ -73,18 +74,21 @@ WhatsApp kullanıcılarını PazarGlobal AI Agent Backend'e bağlayan webhook se
 ## ✨ Özellikler
 
 ### 1. **Twilio WhatsApp Webhook Handler**
+
 - ✅ Incoming WhatsApp mesajlarını yakalama
 - ✅ Form data parsing (Body, From, To, MessageSid)
 - ✅ Media detection (NumMedia, MediaUrl0, MediaContentType0)
 - ✅ Error handling & logging
 
 ### 2. **Conversation History Management**
+
 - ✅ In-memory conversation store
 - ✅ 30 dakikalık inactivity timeout
 - ✅ User-based session tracking
 - ✅ Automatic cleanup (expired conversations)
 
 **Conversation Store Structure:**
+
 ```python
 conversation_store = {
     "whatsapp:+905551234567": {
@@ -98,6 +102,7 @@ conversation_store = {
 ```
 
 ### 3. **Media Handling (Fotoğraf Yönetimi)**
+
 - ✅ Twilio'dan media download (auth ile)
 - ✅ Image validation (type, size, format)
 - ✅ Automatic compression (max 1600px, ~900KB target)
@@ -106,6 +111,7 @@ conversation_store = {
 - ✅ Multi-media support (max 3 photos per message)
 
 **Media Processing Pipeline:**
+
 ```
 Twilio Media URL → Download (with auth)
                       ↓
@@ -121,6 +127,7 @@ Twilio Media URL → Download (with auth)
 ```
 
 ### 4. **Agent Backend Integration**
+
 - ✅ POST to `/agent/run` endpoint
 - ✅ User ID mapping (phone → Supabase users)
 - ✅ Media paths forwarding
@@ -128,6 +135,7 @@ Twilio Media URL → Download (with auth)
 - ✅ Draft listing ID tracking
 
 ### 5. **User Profile Management**
+
 - ✅ Phone number → Supabase profiles lookup
 - ✅ User name extraction (for personalization)
 - ✅ Automatic user context enrichment
@@ -137,18 +145,21 @@ Twilio Media URL → Download (with auth)
 ## 🚀 Kurulum
 
 ### 1. Gereksinimler
+
 - Python 3.11+
 - Twilio Account (WhatsApp Business API)
 - Supabase Account
 - Agent Backend deployed
 
 ### 2. Dependencies Kurulumu
+
 ```bash
 cd pazarglobal-whatsapp-bridge
 pip install -r requirements.txt
 ```
 
 **requirements.txt:**
+
 ```
 fastapi
 uvicorn[standard]
@@ -160,11 +171,15 @@ Pillow
 ```
 
 ### 3. Environment Variables
+
 `.env` dosyası oluşturun:
 
 ```env
 # Agent Backend URL
 AGENT_BACKEND_URL=https://pazarglobal-agent-backend-production.up.railway.app
+
+# Supabase Edge Function (Traffic Controller)
+EDGE_FUNCTION_URL=https://YOUR_PROJECT_REF.supabase.co/functions/v1/whatsapp-traffic-controller
 
 # Twilio Credentials
 TWILIO_ACCOUNT_SID=AC...
@@ -181,6 +196,7 @@ PORT=8080
 ```
 
 ### 4. Lokal Çalıştırma
+
 ```bash
 python main.py
 ```
@@ -188,6 +204,7 @@ python main.py
 Server başlatılır: `http://localhost:8080`
 
 ### 5. Test
+
 ```bash
 # Health check
 curl http://localhost:8080
@@ -201,6 +218,7 @@ curl http://localhost:8080
 ## 🚂 Railway Deployment
 
 ### 1. GitHub Repository
+
 ```bash
 git init
 git add .
@@ -211,16 +229,19 @@ git push -u origin main
 ```
 
 ### 2. Railway Project Setup
-1. **Railway'e git:** https://railway.app/new
+
+1. **Railway'e git:** <https://railway.app/new>
 2. **"Deploy from GitHub repo"** seç
 3. **Repository:** `pazarglobal-whatsapp-bridge`
 4. Railway otomatik Python detect edecek
 
 ### 3. Environment Variables (Railway Dashboard)
+
 **Variables tab → RAW Editor:**
 
 ```env
 AGENT_BACKEND_URL=https://pazarglobal-agent-backend-production.up.railway.app
+EDGE_FUNCTION_URL=https://YOUR_PROJECT_REF.supabase.co/functions/v1/whatsapp-traffic-controller
 TWILIO_ACCOUNT_SID=AC...
 TWILIO_AUTH_TOKEN=...
 TWILIO_WHATSAPP_NUMBER=+14155238886
@@ -231,16 +252,19 @@ PORT=8080
 ```
 
 ### 4. Deploy
+
 - Railway otomatik build & deploy başlatır
 - Build time: ~2-3 dakika
 - Public URL: `https://pazarglobal-whatsapp-bridge-production.up.railway.app`
 
 ### 5. Doğrulama
+
 ```bash
 curl https://your-railway-url.up.railway.app
 ```
 
 Expected:
+
 ```json
 {
   "status": "healthy",
@@ -253,27 +277,34 @@ Expected:
 ## 📞 Twilio Konfigürasyonu
 
 ### 1. Twilio Console Setup
-1. **Login:** https://console.twilio.com
+
+1. **Login:** <https://console.twilio.com>
 2. **WhatsApp Sandbox:** Messaging → Try it out → WhatsApp
 
 ### 2. Webhook URL Ayarlama
+
 **Sandbox Settings:**
 
 - **When a message comes in:**
+
   ```
   https://your-railway-url.up.railway.app/webhook/whatsapp
   ```
+
 - **Method:** POST
 - **Save**
 
 ### 3. WhatsApp Test
+
 1. WhatsApp ile Twilio sandbox numarasına mesaj gönderin: `+1 415 523 8886`
 2. İlk mesaj: `join [your-sandbox-code]` (örn: "join happy-monkey")
 3. Test mesajı: `merhaba`
 4. AI agent'tan cevap almalısınız!
 
 ### 4. Production (WhatsApp Business API)
+
 **Not:** Sandbox yerine production WhatsApp Business API kullanmak için:
+
 - Twilio WhatsApp Business onayı gerekir
 - Company verification
 - Message templates approval
@@ -286,6 +317,7 @@ Expected:
 ### Media Download & Validation
 
 **Supported Media Types:**
+
 - ✅ `image/jpeg`
 - ✅ `image/png`
 - ✅ `image/webp`
@@ -293,6 +325,7 @@ Expected:
 - ❌ Documents (şimdilik desteklenmiyor)
 
 **Size Limits:**
+
 - Max file size: 10 MB
 - Max media per message: 3 photos
 - Compressed target: ~900 KB per image
@@ -324,6 +357,7 @@ def _compress_image(content: bytes, media_type: str) -> bytes:
 ### Supabase Storage Upload
 
 **Storage Path Format:**
+
 ```
 {user_id}/{listing_uuid}/{random_uuid}.{ext}
 
@@ -332,6 +366,7 @@ Example:
 ```
 
 **Upload Process:**
+
 ```python
 # 1. Build storage path
 path = f"{user_id}/{listing_uuid}/{uuid4()}.jpg"
@@ -346,16 +381,19 @@ return path  # Agent backend will handle signed URLs
 ### Draft Listing ID Tracking
 
 **[SYSTEM_MEDIA_NOTE] Format:**
+
 ```
 [SYSTEM_MEDIA_NOTE] DRAFT_LISTING_ID=550e8400-... | MEDIA_PATHS=['path1.jpg', 'path2.jpg'] | MEDIA_TYPE=image/jpeg
 ```
 
 **Purpose:**
+
 - Track photos across conversation turns
 - Link photos to draft listings
 - Accumulate multiple photo uploads
 
 **Example Flow:**
+
 ```
 User: [Sends photo 1]
 Bridge: [SYSTEM_MEDIA_NOTE] DRAFT_ID=abc | MEDIA_PATHS=['photo1.jpg']
@@ -374,6 +412,7 @@ Agent: insert_listing_tool(images=['photo1.jpg', 'photo2.jpg'])
 ### In-Memory Store
 
 **Data Structure:**
+
 ```python
 conversation_store: Dict[str, dict] = {
     "whatsapp:+905551234567": {
@@ -390,11 +429,13 @@ conversation_store: Dict[str, dict] = {
 ### Timeout & Cleanup
 
 **Configuration:**
+
 ```python
 CONVERSATION_TIMEOUT_MINUTES = 30
 ```
 
 **Cleanup Logic:**
+
 ```python
 def _cleanup_expired_conversations():
     now = datetime.now()
@@ -419,6 +460,7 @@ if len(history) > MAX_HISTORY_LENGTH:
 ```
 
 **Neden?**
+
 - Token limitleri (OpenAI API)
 - Response time optimization
 - Memory management
@@ -443,9 +485,11 @@ if len(history) > MAX_HISTORY_LENGTH:
 ## 🌐 API Endpoints
 
 ### **GET /**
+
 Health check endpoint.
 
 **Response:**
+
 ```json
 {
   "status": "healthy",
@@ -457,9 +501,11 @@ Health check endpoint.
 ---
 
 ### **GET /health**
+
 Detailed health check with configuration status.
 
 **Response:**
+
 ```json
 {
   "status": "healthy",
@@ -474,9 +520,11 @@ Detailed health check with configuration status.
 ---
 
 ### **POST /webhook/whatsapp**
+
 Twilio WhatsApp webhook endpoint.
 
 **Expected Form Data (from Twilio):**
+
 ```
 Body: "Message text"
 From: "whatsapp:+905551234567"
@@ -488,6 +536,7 @@ MediaContentType0: "image/jpeg"
 ```
 
 **Processing Flow:**
+
 1. Parse form data
 2. Get/create conversation history
 3. Download & process media (if any)
@@ -496,6 +545,7 @@ MediaContentType0: "image/jpeg"
 6. Return TwiML (empty response to Twilio)
 
 **Response (TwiML):**
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <Response></Response>
@@ -506,9 +556,11 @@ MediaContentType0: "image/jpeg"
 ## 🐛 Sorun Giderme
 
 ### 1. Twilio Webhook Çalışmıyor
+
 **Semptom:** WhatsApp mesajı gönderiliyor ama cevap gelmiyor
 
 **Kontroller:**
+
 ```bash
 # Railway logs kontrol
 # Dashboard → Deployments → View Logs
@@ -521,6 +573,7 @@ curl https://your-railway-url.up.railway.app
 ```
 
 **Common Issues:**
+
 - ❌ Webhook URL yanlış (typo)
 - ❌ Railway service down
 - ❌ Environment variables eksik
@@ -528,9 +581,11 @@ curl https://your-railway-url.up.railway.app
 ---
 
 ### 2. Media Upload Başarısız
+
 **Semptom:** Fotoğraf gönderiliyor ama yüklenmiyor
 
 **Kontroller:**
+
 ```bash
 # Supabase Storage bucket var mı?
 # Dashboard → Storage → product-images
@@ -544,6 +599,7 @@ echo $SUPABASE_SERVICE_KEY
 ```
 
 **Logs:**
+
 ```
 📥 Downloading media from: https://api.twilio.com/...
 📊 Download response: status=200, content-type=image/jpeg
@@ -555,11 +611,13 @@ echo $SUPABASE_SERVICE_KEY
 ---
 
 ### 3. Conversation History Kayboluyor
+
 **Semptom:** Agent önceki mesajları hatırlamıyor
 
 **Sebep:** Conversation timeout (30 dakika)
 
 **Çözüm:**
+
 ```python
 # main.py
 CONVERSATION_TIMEOUT_MINUTES = 60  # Artır
@@ -568,9 +626,11 @@ CONVERSATION_TIMEOUT_MINUTES = 60  # Artır
 ---
 
 ### 4. Agent Backend Connection Error
+
 **Semptom:** "Agent backend unavailable"
 
 **Kontroller:**
+
 ```bash
 # Agent Backend çalışıyor mu?
 curl https://agent-backend-url.railway.app
@@ -585,9 +645,11 @@ echo $AGENT_BACKEND_URL
 ---
 
 ### 5. Twilio Authentication Failed
+
 **Semptom:** Media download 401/403 error
 
 **Çözüm:**
+
 ```python
 # main.py - download_media function
 auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -602,13 +664,16 @@ echo $TWILIO_AUTH_TOKEN
 ## 🎯 Gelecek Özellikler
 
 ### Phase 1: Persistent Conversation Store (Redis) 🔄
+
 **Timeline:** 1 hafta
 
 **Neden?**
+
 - In-memory store Railway restart'ta kaybolur
 - Multi-instance deployment için shared state gerekli
 
 **Implementation:**
+
 ```python
 import redis
 
@@ -627,20 +692,24 @@ def save_conversation(phone: str, messages: list):
 ```
 
 **Railway Redis Add-on:**
+
 - Railway Dashboard → Add Plugin → Redis
 - Auto-provision & REDIS_URL inject
 
 ---
 
 ### Phase 2: Voice Message Support 🎤
+
 **Timeline:** 2 hafta
 
 **Features:**
+
 - Twilio audio download
 - OpenAI Whisper transcription
 - Text-to-Speech response (optional)
 
 **Flow:**
+
 ```
 WhatsApp Voice → Twilio → Bridge download
                               ↓
@@ -652,14 +721,17 @@ WhatsApp Voice → Twilio → Bridge download
 ---
 
 ### Phase 3: Rich Media Responses 📸
+
 **Timeline:** 1 hafta
 
 **Features:**
+
 - Send images from search results
 - Product photo previews
 - Signed URL generation
 
 **Example:**
+
 ```python
 # Generate signed URL for listing image
 url = supabase.storage.from_("product-images").create_signed_url(path, 300)
@@ -676,9 +748,11 @@ twilio_client.messages.create(
 ---
 
 ### Phase 4: Rate Limiting & Security 🔐
+
 **Timeline:** 1 hafta
 
 **Features:**
+
 - User-based rate limiting (10 msg/min)
 - Spam detection
 - Blocked users list
@@ -687,14 +761,17 @@ twilio_client.messages.create(
 ---
 
 ### Phase 5: Multi-Language Support 🌍
+
 **Timeline:** 2 hafta
 
 **Languages:**
+
 - Turkish (default)
 - English
 - Arabic
 
 **Detection:**
+
 ```python
 # Auto-detect from first message
 language = detect_language(message)
@@ -705,16 +782,17 @@ user_context["language"] = language
 
 ## 📚 Kaynaklar
 
-- **Twilio WhatsApp Docs:** https://www.twilio.com/docs/whatsapp
-- **FastAPI Docs:** https://fastapi.tiangolo.com
-- **Supabase Storage Docs:** https://supabase.com/docs/guides/storage
-- **Railway Docs:** https://docs.railway.app
+- **Twilio WhatsApp Docs:** <https://www.twilio.com/docs/whatsapp>
+- **FastAPI Docs:** <https://fastapi.tiangolo.com>
+- **Supabase Storage Docs:** <https://supabase.com/docs/guides/storage>
+- **Railway Docs:** <https://docs.railway.app>
 
 ---
 
 ## 📝 Changelog
 
 ### v1.0.0 (Aralık 2025)
+
 - ✅ Twilio WhatsApp webhook integration
 - ✅ In-memory conversation store (30 min timeout)
 - ✅ Media handling (download, compress, upload)
@@ -730,6 +808,7 @@ user_context["language"] = language
 ## 👨‍💻 Geliştirici Notları
 
 ### Code Structure
+
 ```
 pazarglobal-whatsapp-bridge/
 ├── main.py                      # FastAPI app + webhook handler
@@ -742,6 +821,7 @@ pazarglobal-whatsapp-bridge/
 ### Key Functions
 
 **1. Webhook Handler:**
+
 ```python
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
@@ -752,6 +832,7 @@ async def whatsapp_webhook(request: Request):
 ```
 
 **2. Media Processing:**
+
 ```python
 async def download_media(url, type, sid, media_sid)
 def _compress_image(content, media_type)
@@ -759,6 +840,7 @@ async def _upload_to_supabase(content, path)
 ```
 
 **3. Conversation Management:**
+
 ```python
 def get_conversation_history(phone)
 def save_conversation(phone, messages)
@@ -766,6 +848,7 @@ def _cleanup_expired_conversations()
 ```
 
 ### Development Tips
+
 ```bash
 # Local run with hot reload
 uvicorn main:app --reload --port 8080
