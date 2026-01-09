@@ -8,6 +8,7 @@ import io
 import os
 import uuid
 import re
+import json
 from fastapi import FastAPI, Request, HTTPException, Form
 from fastapi.responses import Response
 import httpx
@@ -334,22 +335,37 @@ def get_search_cache(phone_number: str) -> Optional[List[dict]]:
 
 
 def parse_search_cache_block(text: str) -> tuple[str, Optional[List[dict]]]:
-    """Strip [SEARCH_CACHE]{json} block from text and return remaining text and parsed results."""
+    """Strip [SEARCH_CACHE]{json|[json]} block from text and return remaining text plus parsed results."""
     if not text:
         return text, None
-    match = re.search(r"\[SEARCH_CACHE\](\{.*\})", text, flags=re.DOTALL)
+
+    match = re.search(r"\[SEARCH_CACHE\]\s*([\[{].*)$", text, flags=re.DOTALL)
     if not match:
         return text, None
-    json_part = match.group(1)
-    try:
-        parsed = ast.literal_eval(json_part)
-        if isinstance(parsed, dict) and isinstance(parsed.get("results"), list):
-            stripped = text.replace(match.group(0), "").strip()
-            return stripped, parsed.get("results")
-    except Exception:
+
+    json_part = match.group(1).strip()
+    parsed_results: Optional[List[dict]] = None
+
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(json_part)
+        except Exception:
+            continue
+
+        if isinstance(parsed, dict):
+            candidate = parsed.get("results")
+            if isinstance(candidate, list):
+                parsed_results = candidate
+                break
+        elif isinstance(parsed, list):
+            parsed_results = parsed
+            break
+
+    if parsed_results is None:
         logger.warning("Failed to parse SEARCH_CACHE block")
-    stripped = text.replace(match.group(0), "").strip()
-    return stripped, None
+
+    stripped = (text[:match.start()] + text[match.end():]).strip()
+    return stripped, parsed_results
 
 
 def build_last_search_results_note(results: List[dict], max_items: int = 10) -> str:
