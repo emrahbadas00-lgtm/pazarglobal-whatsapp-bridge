@@ -220,6 +220,30 @@ def _extract_image_urls(text: str) -> List[str]:
     return images
 
 
+def _extract_listing_number(text: Optional[str]) -> Optional[int]:
+    """Parse patterns like '1 nolu ilanı', 'ilan 2', '#3' etc."""
+    if not text:
+        return None
+    lowered = text.casefold()
+    patterns = (
+        r"\b(\d{1,3})\s*(?:nolu|no\.?|numaral[ıi])\s*ilan(?:ın|in|ı|i|u|ü|un|nun)?\b",
+        r"\b(\d{1,3})\s*(?:nolu|no\.?|numara|numaral[ıi])\b",
+        r"\bilan(?:ın|in|ı|i|u|ü)?\s*(?:#|numara|no)?\s*(\d{1,3})\b",
+        r"#\s*(\d{1,3})\b",
+    )
+    for pat in patterns:
+        match = re.search(pat, lowered)
+        if not match:
+            continue
+        try:
+            value = int(match.group(1))
+            if value > 0:
+                return value
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 async def upload_to_supabase(path: str, content: bytes, content_type: str) -> bool:
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         logger.warning("Supabase credentials missing, cannot upload media")
@@ -574,10 +598,10 @@ async def whatsapp_webhook(
     # Default disabled to keep behavior consistent with WebChat and backend server-side detail rendering.
     lower_body = (Body or "").lower().strip()
     search_cache = get_search_cache(phone_number)
-    detail_match = re.search(r"(\d+)\s*nolu\s*ilan[ıi]?\s*göster", lower_body)
     detail_idx: Optional[int] = None
-    if detail_match:
-        detail_idx = int(detail_match.group(1)) - 1
+    requested_number = _extract_listing_number(Body)
+    if requested_number is not None:
+        detail_idx = requested_number - 1
     elif search_cache and len(search_cache) == 1 and ("detay" in lower_body or "ilanı" in lower_body):
         detail_idx = 0
 
